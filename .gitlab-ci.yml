@@ -1,0 +1,44 @@
+include:
+  - project: "devops/gitlab-cicd"
+    ref: "main"
+    file:
+      - "autoversion_apc.yaml"
+      - "docker_build.yaml"
+
+default:
+  tags:
+    - runner1
+    - docker
+
+variables:
+  DOCKER_FILE_PATH: ./Dockerfile
+  IMAGE_NAME: "$LOCAL_DOCKER_HOST/$DOCKER_PATH/$CI_PROJECT_NAME"
+
+stages:
+  - get_version
+  - java_image_build
+
+get_version:
+  stage: get_version
+  extends:
+      - .get_version
+#  only:
+#    - develop
+#    - tags
+
+  artifacts:
+      reports:
+          dotenv: build.env
+
+java_image_build:
+  stage: java_image_build
+  extends: .docker_build_java
+  only:
+    - master
+    - develop
+    - tags
+    - v2-update
+    - APC-986
+
+after_script:
+  - echo "End CI!"

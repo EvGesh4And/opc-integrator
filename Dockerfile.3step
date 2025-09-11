@@ -1,0 +1,31 @@
+﻿FROM maven:3.9.9-eclipse-temurin-21-alpine as deps
+# ARG JAVA_PROXY
+ARG JAVA_USER
+ARG JAVA_PASSWD
+WORKDIR /opt/app
+COPY pom.xml .
+RUN mvn -B -e org.apache.maven.plugins:maven-dependency-plugin:3.8.0:go-offline -Dmule.username=${JAVA_USER} -Dmule.password=${JAVA_PASSWD}
+
+FROM maven:3.9.9-eclipse-temurin-21-alpine as builder
+# ARG JAVA_PROXY
+ARG JAVA_USER
+ARG JAVA_PASSWD
+WORKDIR /opt/app
+COPY --from=deps /root/.m2 /root/.m2
+COPY --from=deps /opt/app/ /opt/app
+COPY src/ ./src
+RUN mvn -B -e clean install -DskipTests -Dmule.username=${JAVA_USER} -Dmule.password=${JAVA_PASSWD}
+#COPY settings-docker.xml /usr/share/maven/ref/
+#RUN mvn -B -f /tmp/pom.xml -s /usr/share/maven/ref/settings-docker.xml dependency:resolve -Dmule.username=${JAVA_USER} -Dmule.password=${JAVA_PASSWD}
+
+FROM eclipse-temurin:21-jre-alpine
+ARG JAVA_TOOL_OPTIONS=-agentlib:jdwp=transport=dt_socket,address=5005,server=y,suspend=n
+
+RUN addgroup -S spring && adduser -S spring -G spring 
+USER spring:spring 
+ENV LOG_PATH=/logs
+ENV LOG_FN=opc-integrator
+EXPOSE 45080
+WORKDIR /home/spring
+COPY --from=builder /opt/app/target/*.jar opc-integrator.jar 
+ENTRYPOINT ["java", "-jar", "opc-integrator.jar"]

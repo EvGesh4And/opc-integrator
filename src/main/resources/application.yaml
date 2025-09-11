@@ -1,0 +1,54 @@
+spring:
+  application:
+    name: OPC Integration Client
+  threads:
+    virtual:
+      enabled: true
+
+server:
+  port: 45080
+
+keystore:
+  algo: PKCS12
+  filename: datana-client.pfx
+  password: password
+
+key-pair:
+  client-alias: datana-alias
+  length: 2048
+
+certificate:
+  client-alias: datana-opc-client
+  common-name: Datana OPC Integration Client
+  organization: Datana
+  org-unit: R&D
+  locality: MSK
+  state: MSK
+  country-code: RU
+  application-url: urn:datana:integration:opc:client
+  dns-name: localhost
+  ip-address: 127.0.0.1 
+
+opc:
+  providers:
+    - name: IOT
+      url: ${IOT_URL:opc.tcp://opcua.datana.iiothub.ru:4841}
+      type: iothub
+      selector: ${$IOT_SELECTOR:opc.tcp://opcua-server-}
+      user: ${IOT_USER:datana}
+      password: ${IOT_PWD:-}
+      namespaces:
+        - id: 2
+          address-type: STRING
+    - name: OPCUA
+      url: ${SIM_URL:opc.tcp://172.29.40.158:30479}
+      type: simulator
+      namespaces:
+        - id: 2
+          address-type: NUMERIC
+
+springdoc:
+  api-docs:
+    path: /open-api
+  swagger-ui:
+    path: /swagger.html

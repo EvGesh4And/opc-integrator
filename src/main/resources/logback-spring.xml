@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <property name="DEFAULT_PATTERN"
+        value="%d{yy-MM-dd HH:mm:ss.SSS} |%10.10thread |%-5p|%30.30logger|%4.4L| %m| %xEx %n" />
+    <property name="CONSOLE_PATTERN"
+        value="%d{yy-MM-dd HH:mm:ss.SSS} |%magenta(%10.10thread) |%highlight(%-5p)|%cyan(%30.30logger)|%cyan(%4.4L)| %m| %red(%xEx) %n" />
+    <property name="LOG" value="${LOG_PATH}/${LOG_FN}" />
+    <springProfile name="!dev">
+        <appender name="rollingfile"
+            class="ch.qos.logback.core.rolling.RollingFileAppender">
+            <file>${LOG:-opc}.log</file>
+            <rollingPolicy
+                class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+                <!-- rollover daily -->
+                <fileNamePattern>${LOG}-%d{MM-dd-yyyy}-%i.log</fileNamePattern>
+                <!-- each file should be at most 100MB, keep 3 days worth of
+				history, but at most 1GB -->
+                <maxFileSize>100MB</maxFileSize>
+                <maxHistory>3</maxHistory>
+                <totalSizeCap>1GB</totalSizeCap>
+            </rollingPolicy>
+            <encoder>
+                <pattern>${DEFAULT_PATTERN}</pattern>
+            </encoder>
+        </appender>
+        <appender name="console" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>${CONSOLE_PATTERN}</pattern>
+            </encoder>
+        </appender>
+        <logger name="ru.datana.integration" level="DEBUG" />
+        <root level="INFO">
+            <appender-ref ref="console" />
+            <appender-ref ref="rollingfile" />
+        </root>
+    </springProfile>
+    <springProfile name="dev">
+        <appender name="console" class="ch.qos.logback.core.ConsoleAppender">
+            <withJansi>true</withJansi>
+            <encoder>
+                <pattern>${CONSOLE_PATTERN}</pattern>
+            </encoder>
+        </appender>
+        <logger name="ru.datana.integration" level="DEBUG" />
+        <root level="INFO">
+            <appender-ref ref="console" />
+        </root>
+    </springProfile>
+</configuration>
