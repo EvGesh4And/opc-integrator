@@ -52,3 +52,9 @@ springdoc:
     path: /open-api
   swagger-ui:
     path: /swagger.html
+
+controller:
+  api:
+    host: ${CONTROLLER_HOST:localhost}
+    port: ${CONTROLLER_PORT:80}
+    base-path: ${CONTROLLER_BASE_PATH:/api/controller}

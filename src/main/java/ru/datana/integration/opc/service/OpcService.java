@@ -26,6 +26,7 @@ import jakarta.validation.constraints.NotNull;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import ru.datana.integration.opc.component.OpcClient;
+import ru.datana.integration.opc.component.ValueManager;
 import ru.datana.integration.opc.dto.Mapping;
 import ru.datana.integration.opc.dto.TagValue;
 import ru.datana.integration.opc.exception.InternalErrorException;
@@ -47,7 +48,8 @@ public class OpcService {
 	private static final String MODEL = "MODEL";
 	private static final String ENV = "ENVIRONMENT";
 	private final Table<String, String, ModelMeta> models = HashBasedTable.create();
-	private final OpcClient client;
+        private final OpcClient client;
+        private final ValueManager valueManager;
 
 	public Set<MappingDesc> getMappings(String name, String env) {
 		log.debug(IN_2, name, env);
@@ -84,9 +86,10 @@ public class OpcService {
 		} else {
 			model = ModelMeta.builder().name(name).mappings(mappings).build();
 		}
-		models.put(name, env, model);
-		log.debug(OUT_0);
-	}
+                models.put(name, env, model);
+                valueManager.registerMappings(name, env, mappings);
+                log.debug(OUT_0);
+        }
 
 	public void subscribe(String name, String env, Set<String> keys) {
 		log.debug(IN_3, name, env, keys);
@@ -156,17 +159,20 @@ public class OpcService {
 		}
 	}
 
-	public void removeAllMappings(String name) {
-		log.debug(IN_1, name);
-		var envs = new HashSet<String>();
-		models.row(name).entrySet().stream().forEach(e -> {
-			var env = e.getKey();
-			client.unsubscribe(name, env);
-			envs.add(env);
-		});;
-		envs.forEach(e -> models.remove(name, e));
-		log.debug(OUT_0);
-	}
+        public void removeAllMappings(String name) {
+                log.debug(IN_1, name);
+                var envs = new HashSet<String>();
+                models.row(name).entrySet().stream().forEach(e -> {
+                        var env = e.getKey();
+                        client.unsubscribe(name, env);
+                        envs.add(env);
+                });;
+                envs.forEach(e -> {
+                        models.remove(name, e);
+                        valueManager.remove(name, e);
+                });
+                log.debug(OUT_0);
+        }
 
 	public void browse(String env) {
 		client.browse(env);
