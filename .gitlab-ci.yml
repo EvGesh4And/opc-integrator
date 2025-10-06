@@ -39,6 +39,7 @@ java_image_build:
     - tags
     - v2-update
     - APC-986
+    - APC-1066
 
 after_script:
   - echo "End CI!"

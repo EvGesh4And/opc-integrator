@@ -232,42 +232,37 @@ public class OpcClient implements StatusListener {
         public Map<String, TagValue> getAllValues(String name, String env, Set<MappingDesc> descriptions) {
                 log.debug(IN_3, name, env, descriptions);
                 var values = new HashMap<String, TagValue>();
-                var notFound = new HashSet<String>();
-		var mappings = descriptions.stream().map(Mapping::create).collect(toSet());
-		List<ReadValueId> readValueIds = new ArrayList<>();
-		mappings.forEach(m -> readValueIds.add(ReadValueId.builder().nodeId(m.getNodeId()).attributeId(Value.uid())
-				.indexRange(null).dataEncoding(NULL_VALUE).build()));
+                // Do not treat Bad status as missing mapping; return it with status="Bad"
+                var mappings = descriptions.stream().map(Mapping::create).collect(toSet());
+                List<ReadValueId> readValueIds = new ArrayList<>();
+                mappings.forEach(m -> readValueIds.add(ReadValueId.builder().nodeId(m.getNodeId()).attributeId(Value.uid())
+                                .indexRange(null).dataEncoding(NULL_VALUE).build()));
 
-		try {
-			var results = getClient(env).read(0.0, TimestampsToReturn.Both, readValueIds)
-					.get(OPC_TIMEOUT_MS, MILLISECONDS).getResults();
-			int i = 0;
-			for (var it = mappings.iterator(); it.hasNext();) {
-				var mapping = it.next();
-				var key = mapping.getKey();
-                                var dv = results[i];
-                                var statusCode = dv.getStatusCode();
-                                if (statusCode.isGood() || statusCode.isUncertain()) {
-                                        var tv = toTagValue(dv);
-                                        values.put(key, tv);
-                                        if (statusCode.isGood()) {
-                                                valueManager.setValue(name, env,
-                                                                mapping.getNodeId().getIdentifier().toString(), tv);
-                                        }
-                                } else {
-                                        log.error("Failure to load [{}] value, errorCode: {}", key, statusCode);
-                                        notFound.add(key);
-                                }
-                                i++;
+                try {
+                    var results = getClient(env).read(0.0, TimestampsToReturn.Both, readValueIds)
+                            .get(OPC_TIMEOUT_MS, MILLISECONDS).getResults();
+                    int i = 0;
+                    for (var it = mappings.iterator(); it.hasNext();) {
+                        var mapping = it.next();
+                        var key = mapping.getKey();
+                        var dv = results[i];
+                        var statusCode = dv.getStatusCode();
+                        var tv = toTagValue(dv);
+                        values.put(key, tv);
+                        if (statusCode.isGood()) {
+                                valueManager.setValue(name, env,
+                                                mapping.getNodeId().getIdentifier().toString(), tv);
+                        } else if (!statusCode.isUncertain()) {
+                                // Keep returning the value with status="Bad" but log it for observability
+                                log.warn("Tag [{}] returned non-good status: {}", key, statusCode);
                         }
-			if (!notFound.isEmpty()) {
-				throw new ResourceNotFoundException("MAPPINGS", notFound.stream().collect(joining(", ")));
-			}
-			log.debug(OUT_1, values);
-			return values;
-		} catch (InterruptedException | ExecutionException | TimeoutException e) {
-			var message = e.getMessage();
-			log.error("Failure to get all values for [{}@{}]: {}", name, env, message);
+                        i++;
+                    }
+                    log.debug(OUT_1, values);
+                    return values;
+                } catch (InterruptedException | ExecutionException | TimeoutException e) {
+                    var message = e.getMessage();
+                    log.error("Failure to get all values for [{}@{}]: {}", name, env, message);
 			throw new InternalErrorException("Failure to load data for [%s@%s]: %s".formatted(name, env, message));
 		}
 	}
