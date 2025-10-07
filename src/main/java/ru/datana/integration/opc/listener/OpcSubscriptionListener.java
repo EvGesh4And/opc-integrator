@@ -45,12 +45,23 @@ public class OpcSubscriptionListener implements ChangeListener, StatusListener {
                                         throw new DataProcessingException("[%s@%s] Unsupported value type [%s] for node id [%s]"
                                                         .formatted(name, env, idType.orElse(null), id));
                                 } else {
-                                        var res = switch (variant.getValue()) {
-                                        case Integer i -> i.doubleValue();
-                                        case Double d -> d;
-                                        case Float f -> f.doubleValue();
-                                        default -> 0d;
-                                        };
+                                        var rawValue = variant.getValue();
+                                        Double res = null;
+                                        if (rawValue instanceof Number number) {
+                                                res = number.doubleValue();
+                                        } else if (rawValue != null) {
+                                                try {
+                                                        res = Double.parseDouble(rawValue.toString());
+                                                } catch (NumberFormatException e) {
+                                                        log.warn("[{}@{}] Unable to parse value [{}] for node id [{}]", name, env,
+                                                                        rawValue, id);
+                                                }
+                                        }
+                                        if (res == null) {
+                                                log.debug("[{}@{}] Skip value [{}] for node id [{}] due to unsupported type {}", name,
+                                                                env, rawValue, id, rawValue == null ? null : rawValue.getClass());
+                                                continue;
+                                        }
                                         mngr.setValue(name, env, id,
                                                         TagValue.builder().value(res)
                                                                         .status(status(dv.getStatusCode()))
