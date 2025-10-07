@@ -18,7 +18,12 @@ public class ControllerUpdateService {
         private final ControllerApiClient client;
 
         public void handleValueChange(String controllerId, String env, String mappingKey, TagValue previous, TagValue current) {
-                if (mappingKey == null || !mappingKey.endsWith(UPDATE_SUFFIX)) {
+                if (mappingKey == null) {
+                        log.debug("Skip [{}@{}] update without mapping key", controllerId, env);
+                        return;
+                }
+                if (!mappingKey.endsWith(UPDATE_SUFFIX)) {
+                        log.debug("Skip [{}@{}:{}] update without suffix", controllerId, env, mappingKey);
                         return;
                 }
                 var currentValue = current == null ? null : current.getValue();
@@ -28,12 +33,16 @@ public class ControllerUpdateService {
                 }
                 var previousValue = previous == null ? null : previous.getValue();
                 if (previousValue != null && Objects.equals(previousValue, currentValue)) {
+                        log.debug("Skip [{}@{}:{}] unchanged value {}", controllerId, env, mappingKey, currentValue);
                         return;
                 }
 
+                log.debug("Handle [{}@{}:{}] update prev={} current={}", controllerId, env, mappingKey, previousValue,
+                                currentValue);
                 var keyWithoutSuffix = mappingKey.substring(0, mappingKey.length() - UPDATE_SUFFIX.length());
                 var parts = keyWithoutSuffix.split("\\.");
                 if (parts.length == 0) {
+                        log.debug("Skip [{}@{}:{}] empty mapping key", controllerId, env, mappingKey);
                         return;
                 }
 
@@ -48,6 +57,7 @@ public class ControllerUpdateService {
 
         private void handleControllerCommand(String controllerId, String env, String command, Double value) {
                 int numericValue = value.intValue();
+                log.debug("Execute controller command [{}] with value {} for {}@{}", command, value, controllerId, env);
                 switch (command) {
                 case "State" -> {
                         switch (numericValue) {
@@ -66,6 +76,7 @@ public class ControllerUpdateService {
         }
 
         private void handleVariableUpdate(String controllerId, String env, String variable, String property, Double value) {
+                log.debug("Execute variable update [{}].[{}] = {} for {}@{}", variable, property, value, controllerId, env);
                 switch (property) {
                 case "state" -> {
                         var stateValue = value.intValue() == 0 ? "OFF" : "ON";
