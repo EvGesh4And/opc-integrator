@@ -17,6 +17,8 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
 
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.task.TaskExecutor;
 import org.springframework.stereotype.Service;
 
 import com.google.common.collect.HashBasedTable;
@@ -50,6 +52,8 @@ public class OpcService {
 	private final Table<String, String, ModelMeta> models = HashBasedTable.create();
         private final OpcClient client;
         private final ValueManager valueManager;
+        @Qualifier("subscriptionTaskExecutor")
+        private final TaskExecutor subscriptionTaskExecutor;
 
 	public Set<MappingDesc> getMappings(String name, String env) {
 		log.debug(IN_2, name, env);
@@ -91,12 +95,20 @@ public class OpcService {
                 log.debug(OUT_0);
         }
 
-	public void subscribe(String name, String env, Set<String> keys) {
-		log.debug(IN_3, name, env, keys);
-		var subscriptionMappings = getModel(name, env).getMappings();
-		client.subscribe(name, env, mappingsByKeys(keys, subscriptionMappings));
-		log.debug(OUT_0);
-	}
+        public void subscribe(String name, String env, Set<String> keys) {
+                log.debug(IN_3, name, env, keys);
+                var subscriptionMappings = getModel(name, env).getMappings();
+                var mappings = Set.copyOf(mappingsByKeys(keys, subscriptionMappings));
+                subscriptionTaskExecutor.execute(() -> {
+                        try {
+                                client.subscribe(name, env, mappings);
+                        } catch (Exception e) {
+                                log.error("Failure to subscribe {}@{}", name, env, e);
+                        } finally {
+                                log.debug(OUT_0);
+                        }
+                });
+        }
 
 	public void unsubscribe(String name, String env) {
 		log.debug(IN_2, name, env);
