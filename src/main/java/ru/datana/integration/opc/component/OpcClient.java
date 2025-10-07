@@ -9,6 +9,7 @@ import static java.util.Objects.requireNonNull;
 import static java.util.Optional.ofNullable;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.stream.Collectors.joining;
+import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toSet;
 import static org.apache.commons.lang3.StringUtils.isBlank;
 import static org.eclipse.milo.opcua.stack.client.DiscoveryClient.getEndpoints;
@@ -180,12 +181,15 @@ public class OpcClient implements StatusListener {
 				}
 			}
 
-			var subscription = ManagedSubscription.createAsync(client, subscriptionIntervalInMs).get(OPC_TIMEOUT_MS,
-					MILLISECONDS);
-			var errors = descriptions.stream().map(Mapping::create).map(m -> addItem(m, subscription))
-					.filter(Objects::nonNull)
-					.map(ed -> new SubscriptionException.ErrorDescription(ed.message, "MAPPING", ed.address()))
-					.collect(toSet());
+                        var subscription = ManagedSubscription.createAsync(client, subscriptionIntervalInMs).get(OPC_TIMEOUT_MS,
+                                        MILLISECONDS);
+                        var mappings = descriptions.stream().map(Mapping::create).collect(toList());
+                        mappings.forEach(mapping -> log.info("Subscribing [{}@{}] tag [{}] with path [{}]", name, env,
+                                        mapping.getKey(), mapping.buildAddress()));
+                        var errors = mappings.stream().map(m -> addItem(m, subscription))
+                                        .filter(Objects::nonNull)
+                                        .map(ed -> new SubscriptionException.ErrorDescription(ed.message, "MAPPING", ed.address()))
+                                        .collect(toSet());
 			if (!errors.isEmpty()) {
 				throw new SubscriptionException(errors);
 			}
