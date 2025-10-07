@@ -27,8 +27,11 @@ public class Mapping {
 		int nsIdx = desc.getNamespaceIndex();
 		if (desc.getNodeId() != null) {
 			return new NodeId(nsIdx, desc.getNodeId());
-		} else if (desc.getTag() != null) {
-			return new NodeId(nsIdx, "%s.%s".formatted(desc.getTag(), desc.getAttribute()));
+                } else if (desc.getTag() != null) {
+                        var attribute = desc.getAttribute();
+                        var identifier = attribute == null || attribute.isBlank() ? desc.getTag()
+                                        : "%s.%s".formatted(desc.getTag(), attribute);
+                        return new NodeId(nsIdx, identifier);
 		} else if (desc.getUuid() != null) {
 			return new NodeId(nsIdx, desc.getUuid());
 		} else if (desc.getBytes() != null) {
