@@ -41,19 +41,21 @@ public class OpcSubscriptionListener implements ChangeListener, StatusListener {
                                                         .sourceTimestamp(ts(dv.getSourceTime()))
                                                         .serverTimestamp(ts(dv.getServerTime()))
                                                         .build());
-                                } else if (!idType.map(IdType.Numeric::equals).orElse(false).booleanValue()) {
-                                        throw new DataProcessingException("[%s@%s] Unsupported value type [%s] for node id [%s]"
-                                                        .formatted(name, env, idType.orElse(null), id));
-                                } else {
-                                        var rawValue = variant.getValue();
-                                        Double res = null;
-                                        if (rawValue instanceof Number number) {
-                                                res = number.doubleValue();
-                                        } else if (rawValue != null) {
-                                                try {
-                                                        res = Double.parseDouble(rawValue.toString());
-                                                } catch (NumberFormatException e) {
-                                                        log.warn("[{}@{}] Unable to parse value [{}] for node id [{}]", name, env,
+                } else if (!idType.map(IdType.Numeric::equals).orElse(false).booleanValue()) {
+                        throw new DataProcessingException("[%s@%s] Unsupported value type [%s] for node id [%s]"
+                                        .formatted(name, env, idType.orElse(null), id));
+                } else {
+                        var rawValue = variant.getValue();
+                        Double res = null;
+                        if (rawValue instanceof Number number) {
+                                res = number.doubleValue();
+                        } else if (rawValue instanceof Boolean bool) {
+                                res = bool ? 1.0 : 0.0;
+                        } else if (rawValue != null) {
+                                try {
+                                        res = Double.parseDouble(rawValue.toString());
+                                } catch (NumberFormatException e) {
+                                        log.warn("[{}@{}] Unable to parse value [{}] for node id [{}]", name, env,
                                                                         rawValue, id);
                                                 }
                                         }
