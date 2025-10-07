@@ -8,6 +8,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.task.TaskExecutor;
 import org.springframework.stereotype.Component;
 
 import lombok.RequiredArgsConstructor;
@@ -27,6 +29,8 @@ public class ValueManager {
         private final Map<String, Map<String, String>> mappingKeys = new HashMap<>();
         private final Map<String, Instant> updateMap = new HashMap<>();
         private final ControllerUpdateService controllerUpdateService;
+        @Qualifier("controllerUpdateTaskExecutor")
+        private final TaskExecutor controllerUpdateTaskExecutor;
 
         public void registerMappings(String name, String env, Set<MappingDesc> descs) {
                 var key = buildKey(name, env);
@@ -58,7 +62,8 @@ public class ValueManager {
                         var mappingKey = keyMap.get(id);
                         if (mappingKey != null) {
                                 log.debug("[{}@{}] resolved mapping key [{}] for node [{}]", name, env, mappingKey, id);
-                                controllerUpdateService.handleValueChange(name, env, mappingKey, previous, value);
+                                controllerUpdateTaskExecutor.execute(() -> controllerUpdateService.handleValueChange(name, env,
+                                                mappingKey, previous, value));
                         } else {
                                 log.debug("[{}@{}] no mapping key for node [{}]", name, env, id);
                         }
