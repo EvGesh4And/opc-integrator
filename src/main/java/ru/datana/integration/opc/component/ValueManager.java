@@ -47,6 +47,7 @@ public class ValueManager {
                 var key = buildKey(name, env);
                 var valueMap = mappings.get(key);
                 if (valueMap == null) {
+                        log.debug("[{}@{}] init value cache", name, env);
                         valueMap = new HashMap<>();
                         mappings.put(key, valueMap);
                 }
@@ -56,8 +57,13 @@ public class ValueManager {
                 if (keyMap != null) {
                         var mappingKey = keyMap.get(id);
                         if (mappingKey != null) {
+                                log.debug("[{}@{}] resolved mapping key [{}] for node [{}]", name, env, mappingKey, id);
                                 controllerUpdateService.handleValueChange(name, env, mappingKey, previous, value);
+                        } else {
+                                log.debug("[{}@{}] no mapping key for node [{}]", name, env, id);
                         }
+                } else {
+                        log.debug("[{}@{}] no registered mapping keys", name, env);
                 }
         }
 
