@@ -3,8 +3,10 @@ package ru.datana.integration.opc.component;
 import static java.time.Instant.now;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -31,15 +33,46 @@ public class ValueManager {
         public void registerMappings(String name, String env, Set<MappingDesc> descs) {
                 var key = buildKey(name, env);
                 if (descs == null || descs.isEmpty()) {
+                        log.debug("[{}@{}] reset mapping registry (empty mapping set)", name, env);
                         mappingKeys.remove(key);
                         return;
                 }
                 var map = mappingKeys.computeIfAbsent(key, k -> new HashMap<>());
                 map.clear();
+
+                List<String> updateKeys = new ArrayList<>();
+                List<String> plainKeys = new ArrayList<>();
+                List<String> missingKeys = new ArrayList<>();
+
                 descs.forEach(desc -> {
-                        var nodeId = Mapping.create(desc).getNodeId().getIdentifier().toString();
-                        map.put(nodeId, desc.getKey());
+                        var mapping = Mapping.create(desc);
+                        var nodeId = mapping.getNodeId().getIdentifier().toString();
+                        var mappingKey = desc.getKey();
+                        map.put(nodeId, mappingKey);
+                        if (mappingKey == null || mappingKey.isBlank()) {
+                                missingKeys.add(nodeId);
+                        } else if (mappingKey.endsWith(".Update")) {
+                                updateKeys.add(mappingKey);
+                        } else {
+                                plainKeys.add(mappingKey);
+                        }
                 });
+
+                log.debug("[{}@{}] registered {} mapping keys (update: {}, plain: {}, missing: {})", name, env, map.size(),
+                                updateKeys.size(), plainKeys.size(), missingKeys.size());
+
+                if (!missingKeys.isEmpty()) {
+                        log.warn("[{}@{}] mapping nodes without key: {}", name, env, missingKeys);
+                }
+
+                if (log.isTraceEnabled()) {
+                        if (!updateKeys.isEmpty()) {
+                                log.trace("[{}@{}] update-enabled keys: {}", name, env, updateKeys);
+                        }
+                        if (!plainKeys.isEmpty()) {
+                                log.trace("[{}@{}] plain keys without .Update suffix: {}", name, env, plainKeys);
+                        }
+                }
         }
 
         public void setValue(String name, String env, String id, TagValue value) {
@@ -47,6 +80,7 @@ public class ValueManager {
                 var key = buildKey(name, env);
                 var valueMap = mappings.get(key);
                 if (valueMap == null) {
+                        log.debug("[{}@{}] init value cache", name, env);
                         valueMap = new HashMap<>();
                         mappings.put(key, valueMap);
                 }
@@ -56,8 +90,13 @@ public class ValueManager {
                 if (keyMap != null) {
                         var mappingKey = keyMap.get(id);
                         if (mappingKey != null) {
+                                log.debug("[{}@{}] resolved mapping key [{}] for node [{}]", name, env, mappingKey, id);
                                 controllerUpdateService.handleValueChange(name, env, mappingKey, previous, value);
+                        } else {
+                                log.debug("[{}@{}] no mapping key for node [{}]", name, env, id);
                         }
+                } else {
+                        log.debug("[{}@{}] no registered mapping keys", name, env);
                 }
         }
 
