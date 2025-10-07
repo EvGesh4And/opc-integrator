@@ -62,6 +62,10 @@ public class ValueManager {
                         var mappingKey = keyMap.get(id);
                         if (mappingKey != null) {
                                 log.debug("[{}@{}] resolved mapping key [{}] for node [{}]", name, env, mappingKey, id);
+                                if (previous == null) {
+                                        log.debug("[{}@{}:{}] skip initial value", name, env, mappingKey);
+                                        return;
+                                }
                                 controllerUpdateTaskExecutor.execute(() -> controllerUpdateService.handleValueChange(name, env,
                                                 mappingKey, previous, value));
                         } else {
