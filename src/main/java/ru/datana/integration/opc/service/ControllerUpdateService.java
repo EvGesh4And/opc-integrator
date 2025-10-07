@@ -75,6 +75,9 @@ public class ControllerUpdateService {
                 }
         }
 
+        private static final String SUPPORTED_VARIABLE_PROPERTIES =
+                        "state, limit_bottom, limit_top, set_point, coef_line_opt, coef_quad_opt, target";
+
         private void handleVariableUpdate(String controllerId, String env, String variable, String property, Double value) {
                 log.debug("Execute variable update [{}].[{}] = {} for {}@{}", variable, property, value, controllerId, env);
                 switch (property) {
@@ -89,7 +92,8 @@ public class ControllerUpdateService {
                         client.updateOptimization(env, controllerId,
                                         singletonMap("vars", singletonMap(variable, singletonMap(property, value))));
                 }
-                default -> log.debug("Unsupported property [{}] for variable [{}]", property, variable);
+                default -> log.warn("Skip [{}@{}:{}] unsupported property [{}]; supported properties: {}", controllerId, env,
+                                variable, property, SUPPORTED_VARIABLE_PROPERTIES);
                 }
         }
 
