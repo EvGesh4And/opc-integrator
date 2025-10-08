@@ -15,6 +15,7 @@ import ru.datana.integration.opc.dto.TagValue;
 @Slf4j
 public class ControllerUpdateService {
         private static final String UPDATE_SUFFIX = ".Update";
+        private static final String READ_VALUE_SUFFIX = ".ReadValue";
         private final ControllerApiClient client;
 
         public void handleValueChange(String controllerId, String env, String mappingKey, TagValue previous, TagValue current) {
@@ -22,8 +23,9 @@ public class ControllerUpdateService {
                         log.debug("Skip [{}@{}] update without mapping key", controllerId, env);
                         return;
                 }
-                if (!mappingKey.endsWith(UPDATE_SUFFIX)) {
-                        log.debug("Skip [{}@{}:{}] update without suffix", controllerId, env, mappingKey);
+                var suffix = resolveSupportedSuffix(mappingKey);
+                if (suffix == null) {
+                        log.debug("Skip [{}@{}:{}] update without supported suffix", controllerId, env, mappingKey);
                         return;
                 }
                 var currentValue = current == null ? null : current.getValue();
@@ -39,7 +41,7 @@ public class ControllerUpdateService {
 
                 log.debug("Handle [{}@{}:{}] update prev={} current={}", controllerId, env, mappingKey, previousValue,
                                 currentValue);
-                var keyWithoutSuffix = mappingKey.substring(0, mappingKey.length() - UPDATE_SUFFIX.length());
+                var keyWithoutSuffix = mappingKey.substring(0, mappingKey.length() - suffix.length());
                 var parts = keyWithoutSuffix.split("\\.");
                 if (parts.length == 0) {
                         log.debug("Skip [{}@{}:{}] empty mapping key", controllerId, env, mappingKey);
@@ -53,6 +55,19 @@ public class ControllerUpdateService {
                         var property = joinParts(parts, 1);
                         handleVariableUpdate(controllerId, env, variable, property, currentValue);
                 }
+        }
+
+        private static String resolveSupportedSuffix(String mappingKey) {
+                if (mappingKey == null) {
+                        return null;
+                }
+                if (mappingKey.endsWith(UPDATE_SUFFIX)) {
+                        return UPDATE_SUFFIX;
+                }
+                if (mappingKey.endsWith(READ_VALUE_SUFFIX)) {
+                        return READ_VALUE_SUFFIX;
+                }
+                return null;
         }
 
         private void handleControllerCommand(String controllerId, String env, String command, Double value) {
