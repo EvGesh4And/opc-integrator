@@ -356,24 +356,30 @@ public class OpcClient implements StatusListener {
 			log.error("Failed to load [{}] IoTHub [url: {}]. Error: {}", name, url, e.getMessage());
 			return false;
 		}
-		try {
-			var client = OpcUaClient.create(url,
-					endpoints -> endpoints.stream().filter(e -> e.getEndpointUrl().startsWith(config.getSelector()))
-							.findAny().map(d -> d.toBuilder().endpointUrl(url).build()),
-					b -> b.setApplicationName(english(APP_NAME)).setApplicationUri(APP_URL)
-							.setKeyPair(keyStoreLoader.getClientKeyPair())
-							.setCertificate(keyStoreLoader.getClientCertificate())
-							.setCertificateChain(keyStoreLoader.getClientCertificateChain())
-							.setCertificateValidator(certificateValidator).setIdentityProvider(provider)
-							.setRequestTimeout(uint(5000)).build());
-			clients.put(name, client);
-			log.debug("IotHub client [{}] is OK", name);
-			return true;
-		} catch (UaException | InternalErrorException e) {
-			log.error("Client creation error for " + name, e);
-			failedEndpoints.put(config.getName(), config);
-			return false;
-		}
+                try {
+                        var client = OpcUaClient.create(url,
+                                        endpoints -> endpoints.stream().filter(e -> e.getEndpointUrl().startsWith(config.getSelector()))
+                                                        .findAny().map(d -> d.toBuilder().endpointUrl(url).build()),
+                                        b -> b.setApplicationName(english(APP_NAME)).setApplicationUri(APP_URL)
+                                                        .setKeyPair(keyStoreLoader.getClientKeyPair())
+                                                        .setCertificate(keyStoreLoader.getClientCertificate())
+                                                        .setCertificateChain(keyStoreLoader.getClientCertificateChain())
+                                                        .setCertificateValidator(certificateValidator).setIdentityProvider(provider)
+                                                        .setRequestTimeout(uint(5000)).build());
+                        if (connect(client)) {
+                                clients.put(name, client);
+                                failedEndpoints.remove(name);
+                                log.debug("IotHub client [{}] is OK", name);
+                                return true;
+                        }
+                        log.error("Failed to connect IoTHub client [{}]", name);
+                        failedEndpoints.put(config.getName(), config);
+                        return false;
+                } catch (UaException | InternalErrorException e) {
+                        log.error("Client creation error for " + name, e);
+                        failedEndpoints.put(config.getName(), config);
+                        return false;
+                }
 	}
 
 	private boolean connectSimulator(OpcEndpoint config) {
@@ -388,23 +394,29 @@ public class OpcClient implements StatusListener {
 			failedEndpoints.put(config.getName(), config);
 			return false;
 		}
-		try {
-			var client = OpcUaClient.create(url,
-					endpoints -> ofNullable(endpoints.get(0).toBuilder().endpointUrl(url).build()),
-					b -> b.setApplicationName(english(APP_NAME)).setApplicationUri(APP_URL)
-							.setKeyPair(keyStoreLoader.getClientKeyPair())
-							.setCertificate(keyStoreLoader.getClientCertificate())
-							.setCertificateChain(keyStoreLoader.getClientCertificateChain())
-							.setCertificateValidator(certificateValidator).setIdentityProvider(provider)
-							.setRequestTimeout(uint(5000)).build());
-			clients.put(name, client);
-			log.debug("Simulator client [{}] is OK", name);
-			return true;
-		} catch (UaException | InternalErrorException e) {
-			log.error("Client creation error for " + name, e);
-			return false;
-		}
-	}
+                try {
+                        var client = OpcUaClient.create(url,
+                                        endpoints -> ofNullable(endpoints.get(0).toBuilder().endpointUrl(url).build()),
+                                        b -> b.setApplicationName(english(APP_NAME)).setApplicationUri(APP_URL)
+                                                        .setKeyPair(keyStoreLoader.getClientKeyPair())
+                                                        .setCertificate(keyStoreLoader.getClientCertificate())
+                                                        .setCertificateChain(keyStoreLoader.getClientCertificateChain())
+                                                        .setCertificateValidator(certificateValidator).setIdentityProvider(provider)
+                                                        .setRequestTimeout(uint(5000)).build());
+                        if (connect(client)) {
+                                clients.put(name, client);
+                                failedEndpoints.remove(name);
+                                log.debug("Simulator client [{}] is OK", name);
+                                return true;
+                        }
+                        log.error("Failed to connect simulator client [{}]", name);
+                        failedEndpoints.put(config.getName(), config);
+                        return false;
+                } catch (UaException | InternalErrorException e) {
+                        log.error("Client creation error for " + name, e);
+                        return false;
+                }
+        }
 
 	private void logEndPoints(String url) {
 		try {
@@ -574,7 +586,7 @@ public class OpcClient implements StatusListener {
 				created.createDataItems(nodeIds);
 				created.addChangeListener(new OpcSubscriptionListener(valueManager, name, env));
 				created.addStatusListener(this);
-				subscriptions.put(envOpcConfig, name, created);
+                                subscriptions.put(env, name, created);
 			} catch (InterruptedException | ExecutionException | TimeoutException | UaException e) {
 				log.error("Exception [{}]. {}", e.getClass().getSimpleName(), e.getMessage());
 				e.printStackTrace();
