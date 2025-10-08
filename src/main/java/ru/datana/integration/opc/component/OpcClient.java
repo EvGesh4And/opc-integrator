@@ -29,15 +29,17 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.locks.ReentrantLock;
 
 import org.eclipse.milo.opcua.sdk.client.OpcUaClient;
 import org.eclipse.milo.opcua.sdk.client.api.identity.AnonymousProvider;
@@ -66,9 +68,6 @@ import org.springframework.stereotype.Component;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.collect.HashBasedTable;
-import com.google.common.collect.Table;
-
 import ru.datana.integration.opc.dto.TagValue;
 
 import jakarta.annotation.PostConstruct;
@@ -113,12 +112,13 @@ public class OpcClient implements StatusListener {
 	private final KeyStoreLoader keyStoreLoader;
 
 	private final OpcEndpointsConfiguraiton opcConfig;
-	private final Table<String, String, ManagedSubscription> subscriptions = HashBasedTable.create();
-	private final ValueManager valueManager;
+        private final ConcurrentMap<String, ConcurrentMap<String, ManagedSubscription>> subscriptions = new ConcurrentHashMap<>();
+        private final ValueManager valueManager;
 
-	private DefaultClientCertificateValidator certificateValidator;
-	private Map<String, OpcUaClient> clients = new HashMap<>();
-	private Map<String, OpcEndpoint> failedEndpoints = new HashMap<>();
+        private DefaultClientCertificateValidator certificateValidator;
+        private final ConcurrentMap<String, OpcUaClient> clients = new ConcurrentHashMap<>();
+        private final ConcurrentMap<String, OpcEndpoint> failedEndpoints = new ConcurrentHashMap<>();
+        private final ConcurrentMap<String, ReentrantLock> envLocks = new ConcurrentHashMap<>();
 
 	@Value("${subscriptionIntervalInMs:100}")
 	private int subscriptionIntervalInMs;
@@ -166,65 +166,88 @@ public class OpcClient implements StatusListener {
 		failedEndpoints.values().stream().forEach(this::connectEndpoint);
 	}
 
-	public void subscribe(String name, String env, Set<MappingDesc> descriptions) {
-		log.debug(IN_3, name, env, descriptions);
-		ofNullable(subscriptions.get(env, name)).ifPresent(s -> unsubscribe(env, name));
-		try {
-			var client = clients.get(env);
-			if (client == null) {
-				var endpoint = ofNullable(failedEndpoints.get(env))
-						.orElseThrow(() -> new ResourceNotFoundException(ENV, env));
-				if (!connectEndpoint(endpoint)) {
-					throw new InternalErrorException("Failure to connect to [%s] environment".formatted(env));
-				} else {
-					client = clients.get(env);
-				}
-			}
+        public void subscribe(String name, String env, Set<MappingDesc> descriptions) {
+                log.debug(IN_3, name, env, descriptions);
+                var lock = lockFor(env);
+                lock.lock();
+                try {
+                        var envSubscriptions = subscriptions.computeIfAbsent(env, __ -> new ConcurrentHashMap<>());
+                        ofNullable(envSubscriptions.get(name)).ifPresent(s -> unsubscribe(env, name));
+                        try {
+                                var client = clients.get(env);
+                                if (client == null) {
+                                        var endpoint = ofNullable(failedEndpoints.get(env))
+                                                        .orElseThrow(() -> new ResourceNotFoundException(ENV, env));
+                                        if (!connectEndpoint(endpoint)) {
+                                                throw new InternalErrorException(
+                                                                "Failure to connect to [%s] environment".formatted(env));
+                                        } else {
+                                                client = clients.get(env);
+                                        }
+                                }
 
-                        var subscription = ManagedSubscription.createAsync(client, subscriptionIntervalInMs).get(OPC_TIMEOUT_MS,
-                                        MILLISECONDS);
-                        var mappings = descriptions.stream().map(Mapping::create).collect(toList());
-                        mappings.forEach(mapping -> log.info("Subscribing [{}@{}] tag [{}] with path [{}]", name, env,
-                                        mapping.getKey(), mapping.buildAddress()));
-                        var errors = mappings.stream().map(m -> addItem(m, subscription))
-                                        .filter(Objects::nonNull)
-                                        .map(ed -> new SubscriptionException.ErrorDescription(ed.message, "MAPPING", ed.address()))
-                                        .collect(toSet());
-			if (!errors.isEmpty()) {
-				throw new SubscriptionException(errors);
-			}
-			subscription.addChangeListener(new OpcSubscriptionListener(valueManager, name, env));
-			subscription.addStatusListener(this);
-			subscriptions.put(env, name, subscription);
-			getAllValues(name, env, descriptions);
-		} catch (InterruptedException | ExecutionException | TimeoutException e) {
-			var message = "Failure to create [%s] subscription at [%s] environment".formatted(name, env);
-			log.error(message, e);
-			throw new InternalErrorException(message);
-		}
-		log.debug(OUT_0);
-	}
+                                var subscription = ManagedSubscription.createAsync(client, subscriptionIntervalInMs)
+                                                .get(OPC_TIMEOUT_MS, MILLISECONDS);
+                                var mappings = descriptions.stream().map(Mapping::create).collect(toList());
+                                mappings.forEach(mapping -> log.info("Subscribing [{}@{}] tag [{}] with path [{}]", name, env,
+                                                mapping.getKey(), mapping.buildAddress()));
+                                var errors = mappings.stream().map(m -> addItem(m, subscription))
+                                                .filter(Objects::nonNull)
+                                                .map(ed -> new SubscriptionException.ErrorDescription(ed.message, "MAPPING",
+                                                                ed.address()))
+                                                .collect(toSet());
+                                if (!errors.isEmpty()) {
+                                        throw new SubscriptionException(errors);
+                                }
+                                subscription.addChangeListener(new OpcSubscriptionListener(valueManager, name, env));
+                                subscription.addStatusListener(this);
+                                envSubscriptions.put(name, subscription);
+                                getAllValues(name, env, descriptions);
+                        } catch (InterruptedException | ExecutionException | TimeoutException e) {
+                                var message = "Failure to create [%s] subscription at [%s] environment".formatted(name, env);
+                                log.error(message, e);
+                                throw new InternalErrorException(message);
+                        }
+                } finally {
+                        lock.unlock();
+                }
+                log.debug(OUT_0);
+        }
 
-	public boolean unsubscribe(String name, String env) {
-		log.debug(IN_2, name, env);
-		boolean res = false;
-		var subscription = subscriptions.get(env, name);
-		if (subscription != null) {
-			try {
-				subscription.deleteAsync().get(OPC_TIMEOUT_MS, MILLISECONDS);
-				subscriptions.remove(env, name);
-				valueManager.remove(name, env);
-				res = true;
-			} catch (InterruptedException | ExecutionException | TimeoutException e) {
-				log.error("Failure to delete [%s] subscription at [%s] environment".formatted(name, env), e);
-			}
-		} else {
-			log.warn("Unknown subscription: {}@{}", name, env);
-			res = true;
-		}
-		log.debug(OUT_1, res);
-		return res;
-	}
+        public boolean unsubscribe(String name, String env) {
+                log.debug(IN_2, name, env);
+                var lock = lockFor(env);
+                lock.lock();
+                try {
+                        var envSubscriptions = subscriptions.get(env);
+                        if (envSubscriptions == null) {
+                                log.warn("Unknown subscription: {}@{}", name, env);
+                                log.debug(OUT_1, true);
+                                return true;
+                        }
+                        var subscription = envSubscriptions.remove(name);
+                        if (subscription != null) {
+                                try {
+                                        subscription.deleteAsync().get(OPC_TIMEOUT_MS, MILLISECONDS);
+                                        valueManager.remove(name, env);
+                                        log.debug(OUT_1, true);
+                                        return true;
+                                } catch (InterruptedException | ExecutionException | TimeoutException e) {
+                                        log.error("Failure to delete [%s] subscription at [%s] environment".formatted(name, env),
+                                                        e);
+                                        envSubscriptions.put(name, subscription);
+                                }
+                        } else {
+                                log.warn("Unknown subscription: {}@{}", name, env);
+                                log.debug(OUT_1, true);
+                                return true;
+                        }
+                        log.debug(OUT_1, false);
+                        return false;
+                } finally {
+                        lock.unlock();
+                }
+        }
 
         public Map<String, TagValue> getValues(String name, String env) {
                 log.debug(IN_2, name, env);
@@ -235,73 +258,87 @@ public class OpcClient implements StatusListener {
 
         public Map<String, TagValue> getAllValues(String name, String env, Set<MappingDesc> descriptions) {
                 log.debug(IN_3, name, env, descriptions);
-                var values = new HashMap<String, TagValue>();
-                // Do not treat Bad status as missing mapping; return it with status="Bad"
-                var mappings = descriptions.stream().map(Mapping::create).collect(toSet());
-                List<ReadValueId> readValueIds = new ArrayList<>();
-                mappings.forEach(m -> readValueIds.add(ReadValueId.builder().nodeId(m.getNodeId()).attributeId(Value.uid())
-                                .indexRange(null).dataEncoding(NULL_VALUE).build()));
-
+                var lock = lockFor(env);
+                lock.lock();
                 try {
-                    var results = getClient(env).read(0.0, TimestampsToReturn.Both, readValueIds)
-                            .get(OPC_TIMEOUT_MS, MILLISECONDS).getResults();
-                    int i = 0;
-                    for (var it = mappings.iterator(); it.hasNext();) {
-                        var mapping = it.next();
-                        var key = mapping.getKey();
-                        var dv = results[i];
-                        var statusCode = dv.getStatusCode();
-                        var tv = toTagValue(dv);
-                        values.put(key, tv);
-                        if (statusCode.isGood()) {
-                                valueManager.setValue(name, env,
-                                                mapping.getNodeId().getIdentifier().toString(), tv);
-                        } else if (!statusCode.isUncertain()) {
-                                // Keep returning the value with status="Bad" but log it for observability
-                                log.warn("Tag [{}] returned non-good status: {}", key, statusCode);
-                        }
-                        i++;
-                    }
-                    log.debug(OUT_1, values);
-                    return values;
-                } catch (InterruptedException | ExecutionException | TimeoutException e) {
-                    var message = e.getMessage();
-                    log.error("Failure to get all values for [{}@{}]: {}", name, env, message);
-			throw new InternalErrorException("Failure to load data for [%s@%s]: %s".formatted(name, env, message));
-		}
-	}
+                        var values = new HashMap<String, TagValue>();
+                        // Do not treat Bad status as missing mapping; return it with status="Bad"
+                        var mappings = descriptions.stream().map(Mapping::create).collect(toSet());
+                        List<ReadValueId> readValueIds = new ArrayList<>();
+                        mappings.forEach(m -> readValueIds.add(ReadValueId.builder().nodeId(m.getNodeId()).attributeId(Value.uid())
+                                        .indexRange(null).dataEncoding(NULL_VALUE).build()));
 
-	public void setValues(String name, String env, Map<MappingDesc, Float> values) {
-		log.debug(IN_3, name, env, values);
-		var res = values.entrySet().stream()
-				// TODO: remove filter when all tags will support "AllowNulls" prop
-				.filter(e -> e.getValue() != null).map(this::buildWriteValue).toList();
-		var client = getClient(env);
-		try {
-			var response = client.write(res).get(OPC_TIMEOUT_MS, MILLISECONDS);
-			var statusCodes = response.getResults();
-			for (int i = 0; i < statusCodes.length; i++) {
-				var wv = res.get(i);
-				var code = statusCodes[i];
-                                if (code.isGood()) {
-                                        valueManager.setValue(name, env, wv.getNodeId().getIdentifier().toString(),
-                                                        TagValue.builder()
-                                                                        .value(Double.parseDouble(wv.getValue().getValue().getValue().toString()))
-                                                                        .status("Good")
-                                                                        .build());
-                                        log.debug("success: [{}] => [{}]", wv.getNodeId().getIdentifier(), wv.getValue());
-                                } else {
-					log.error("failure: [{}] =!> [{}]. code: [{}]", wv.getNodeId().getIdentifier(), wv.getValue(),
-							Arrays.toString(lookup(code.getValue()).get()));
-				}
-			}
-		} catch (InterruptedException | ExecutionException | TimeoutException e) {
-			var message = e.getMessage();
-			log.error("Failure to set values for [{}@{}]: {}", name, env, message);
-			throw new InternalErrorException("Failure to set values for [%s@%s]: %s".formatted(name, env, message));
-		}
-		log.debug(OUT_0);
-	}
+                        try {
+                                var results = getClient(env).read(0.0, TimestampsToReturn.Both, readValueIds)
+                                                .get(OPC_TIMEOUT_MS, MILLISECONDS).getResults();
+                                int i = 0;
+                                for (var it = mappings.iterator(); it.hasNext();) {
+                                        var mapping = it.next();
+                                        var key = mapping.getKey();
+                                        var dv = results[i];
+                                        var statusCode = dv.getStatusCode();
+                                        var tv = toTagValue(dv);
+                                        values.put(key, tv);
+                                        if (statusCode.isGood()) {
+                                                valueManager.setValue(name, env,
+                                                                mapping.getNodeId().getIdentifier().toString(), tv);
+                                        } else if (!statusCode.isUncertain()) {
+                                                // Keep returning the value with status="Bad" but log it for observability
+                                                log.warn("Tag [{}] returned non-good status: {}", key, statusCode);
+                                        }
+                                        i++;
+                                }
+                                log.debug(OUT_1, values);
+                                return values;
+                        } catch (InterruptedException | ExecutionException | TimeoutException e) {
+                                var message = e.getMessage();
+                                log.error("Failure to get all values for [{}@{}]: {}", name, env, message);
+                                throw new InternalErrorException(
+                                                "Failure to load data for [%s@%s]: %s".formatted(name, env, message));
+                        }
+                } finally {
+                        lock.unlock();
+                }
+        }
+
+        public void setValues(String name, String env, Map<MappingDesc, Float> values) {
+                log.debug(IN_3, name, env, values);
+                var lock = lockFor(env);
+                lock.lock();
+                try {
+                        var res = values.entrySet().stream()
+                                        // TODO: remove filter when all tags will support "AllowNulls" prop
+                                        .filter(e -> e.getValue() != null).map(this::buildWriteValue).toList();
+                        var client = getClient(env);
+                        try {
+                                var response = client.write(res).get(OPC_TIMEOUT_MS, MILLISECONDS);
+                                var statusCodes = response.getResults();
+                                for (int i = 0; i < statusCodes.length; i++) {
+                                        var wv = res.get(i);
+                                        var code = statusCodes[i];
+                                        if (code.isGood()) {
+                                                valueManager.setValue(name, env, wv.getNodeId().getIdentifier().toString(),
+                                                                TagValue.builder()
+                                                                                .value(Double.parseDouble(wv.getValue().getValue().getValue().toString()))
+                                                                                .status("Good")
+                                                                                .build());
+                                                log.debug("success: [{}] => [{}]", wv.getNodeId().getIdentifier(), wv.getValue());
+                                        } else {
+                                                log.error("failure: [{}] =!> [{}]. code: [{}]", wv.getNodeId().getIdentifier(), wv.getValue(),
+                                                                Arrays.toString(lookup(code.getValue()).get()));
+                                        }
+                                }
+                        } catch (InterruptedException | ExecutionException | TimeoutException e) {
+                                var message = e.getMessage();
+                                log.error("Failure to set values for [{}@{}]: {}", name, env, message);
+                                throw new InternalErrorException(
+                                                "Failure to set values for [%s@%s]: %s".formatted(name, env, message));
+                        }
+                } finally {
+                        lock.unlock();
+                }
+                log.debug(OUT_0);
+        }
 
 	public boolean isEnvironmentDeclared(String env) {
 		return (null != clients.get(env)) || (null != failedEndpoints.get(env));
@@ -312,99 +349,134 @@ public class OpcClient implements StatusListener {
 		browseNode("", getClient(env), Identifiers.RootFolder);
 	}
 
-	private void checkAvailability(OpcEndpoint cfg) {
-		String env = cfg.getName();
-		Instant lastUpdated = valueManager.getUpdateTS(env);
-		var subcriptions = subscriptions.row(env).entrySet();
-		if (!subcriptions.isEmpty()) {
-			if (between(lastUpdated, now()).getSeconds() > CONNECTION_DISCONNECT_IN_SECONDS) {
-				log.warn("Reconnecting to [{}], last data were received at {}", cfg.getName(), lastUpdated.toString());
-				boolean isConnected = switch (cfg.getType()) {
-				case IOTHUB -> connectIoTHub(cfg);
-				case SIMULATOR -> connectSimulator(cfg);
-				default -> throw new IllegalArgumentException("Unesupported endpoingt type: " + cfg.getType());
-				};
-				if (isConnected) {
-					log.warn("Recreating [{}] subscriptions at [{}]", subcriptions.size(), env);
-					subcriptions.stream().forEach(this::recreateSubscription);
-				} else {
-					log.warn("Connection failure to [{}] environment", env);
-				}
-			} else {
-				log.debug("Env [{}] is assumed healthy: last update time at {}", env, lastUpdated);
-			}
-		} else {
-			log.debug("Empty subscription set at {}", env);
-		}
-	}
+        private void checkAvailability(OpcEndpoint cfg) {
+                String env = cfg.getName();
+                var lock = lockFor(env);
+                lock.lock();
+                try {
+                        Instant lastUpdated = valueManager.getUpdateTS(env);
+                        var envSubscriptions = subscriptions.get(env);
+                        if (envSubscriptions != null && !envSubscriptions.isEmpty()) {
+                                if (between(lastUpdated, now()).getSeconds() > CONNECTION_DISCONNECT_IN_SECONDS) {
+                                        log.warn("Reconnecting to [{}], last data were received at {}", cfg.getName(),
+                                                        lastUpdated.toString());
+                                        boolean isConnected = switch (cfg.getType()) {
+                                        case IOTHUB -> connectIoTHub(cfg);
+                                        case SIMULATOR -> connectSimulator(cfg);
+                                        default -> throw new IllegalArgumentException(
+                                                        "Unesupported endpoingt type: " + cfg.getType());
+                                        };
+                                        if (isConnected) {
+                                                log.warn("Recreating [{}] subscriptions at [{}]", envSubscriptions.size(), env);
+                                                envSubscriptions.entrySet().forEach(entry -> recreateSubscription(env, entry));
+                                        } else {
+                                                log.warn("Connection failure to [{}] environment", env);
+                                        }
+                                } else {
+                                        log.debug("Env [{}] is assumed healthy: last update time at {}", env, lastUpdated);
+                                }
+                        } else {
+                                log.debug("Empty subscription set at {}", env);
+                        }
+                } finally {
+                        lock.unlock();
+                }
+        }
 
-	private void recreateSubscription(Map.Entry<String, ManagedSubscription> e) {
-		String name = e.getKey();
-		var subscription = e.getValue();
-		log.warn("FAKE IMPLEMENTATION: recreating {} with [id: {}]", name,
-				subscription.getSubscription().getSubscriptionId());
-	}
+        private void recreateSubscription(String env, Map.Entry<String, ManagedSubscription> e) {
+                String name = e.getKey();
+                var subscription = e.getValue();
+                log.warn("FAKE IMPLEMENTATION: recreating {} with [id: {}] for env [{}]", name,
+                                subscription.getSubscription().getSubscriptionId(), env);
+        }
 
-	private boolean connectIoTHub(OpcEndpoint config) {
-		var name = config.getName();
-		log.debug("Connecting IoTHub: [{}]", name);
-		var provider = new UsernameProvider(config.getUser(), config.getPassword());
-		var url = config.getUrl();
-		try {
-			logEndPoints(url);
-		} catch (InternalErrorException e) {
-			log.error("Failed to load [{}] IoTHub [url: {}]. Error: {}", name, url, e.getMessage());
-			return false;
-		}
-		try {
-			var client = OpcUaClient.create(url,
-					endpoints -> endpoints.stream().filter(e -> e.getEndpointUrl().startsWith(config.getSelector()))
-							.findAny().map(d -> d.toBuilder().endpointUrl(url).build()),
-					b -> b.setApplicationName(english(APP_NAME)).setApplicationUri(APP_URL)
-							.setKeyPair(keyStoreLoader.getClientKeyPair())
-							.setCertificate(keyStoreLoader.getClientCertificate())
-							.setCertificateChain(keyStoreLoader.getClientCertificateChain())
-							.setCertificateValidator(certificateValidator).setIdentityProvider(provider)
-							.setRequestTimeout(uint(5000)).build());
-			clients.put(name, client);
-			log.debug("IotHub client [{}] is OK", name);
-			return true;
-		} catch (UaException | InternalErrorException e) {
-			log.error("Client creation error for " + name, e);
-			failedEndpoints.put(config.getName(), config);
-			return false;
-		}
-	}
+        private boolean connectIoTHub(OpcEndpoint config) {
+                var name = config.getName();
+                log.debug("Connecting IoTHub: [{}]", name);
+                var lock = lockFor(name);
+                lock.lock();
+                try {
+                        var provider = new UsernameProvider(config.getUser(), config.getPassword());
+                        var url = config.getUrl();
+                        try {
+                                logEndPoints(url);
+                        } catch (InternalErrorException e) {
+                                log.error("Failed to load [{}] IoTHub [url: {}]. Error: {}", name, url, e.getMessage());
+                                return false;
+                        }
+                        try {
+                                var client = OpcUaClient.create(url,
+                                                endpoints -> endpoints.stream()
+                                                                .filter(e -> e.getEndpointUrl().startsWith(config.getSelector()))
+                                                                .findAny().map(d -> d.toBuilder().endpointUrl(url).build()),
+                                                b -> b.setApplicationName(english(APP_NAME)).setApplicationUri(APP_URL)
+                                                                .setKeyPair(keyStoreLoader.getClientKeyPair())
+                                                                .setCertificate(keyStoreLoader.getClientCertificate())
+                                                                .setCertificateChain(keyStoreLoader.getClientCertificateChain())
+                                                                .setCertificateValidator(certificateValidator)
+                                                                .setIdentityProvider(provider)
+                                                                .setRequestTimeout(uint(5000)).build());
+                                if (connect(client)) {
+                                        clients.put(name, client);
+                                        failedEndpoints.remove(name);
+                                        log.debug("IotHub client [{}] is OK", name);
+                                        return true;
+                                }
+                                log.error("Failed to connect IoTHub client [{}]", name);
+                                failedEndpoints.put(config.getName(), config);
+                                return false;
+                        } catch (UaException | InternalErrorException e) {
+                                log.error("Client creation error for " + name, e);
+                                failedEndpoints.put(config.getName(), config);
+                                return false;
+                        }
+                } finally {
+                        lock.unlock();
+                }
+        }
 
-	private boolean connectSimulator(OpcEndpoint config) {
-		var name = config.getName();
-		log.debug("Connecting Simulator: [{}]", name);
-		var provider = new AnonymousProvider();
-		var url = config.getUrl();
-		try {
-			logEndPoints(url);
-		} catch (InternalErrorException e) {
-			log.error("Failed to load [{}] simulator [url: {}]. Error: {}", name, url, e.getMessage());
-			failedEndpoints.put(config.getName(), config);
-			return false;
-		}
-		try {
-			var client = OpcUaClient.create(url,
-					endpoints -> ofNullable(endpoints.get(0).toBuilder().endpointUrl(url).build()),
-					b -> b.setApplicationName(english(APP_NAME)).setApplicationUri(APP_URL)
-							.setKeyPair(keyStoreLoader.getClientKeyPair())
-							.setCertificate(keyStoreLoader.getClientCertificate())
-							.setCertificateChain(keyStoreLoader.getClientCertificateChain())
-							.setCertificateValidator(certificateValidator).setIdentityProvider(provider)
-							.setRequestTimeout(uint(5000)).build());
-			clients.put(name, client);
-			log.debug("Simulator client [{}] is OK", name);
-			return true;
-		} catch (UaException | InternalErrorException e) {
-			log.error("Client creation error for " + name, e);
-			return false;
-		}
-	}
+        private boolean connectSimulator(OpcEndpoint config) {
+                var name = config.getName();
+                log.debug("Connecting Simulator: [{}]", name);
+                var lock = lockFor(name);
+                lock.lock();
+                try {
+                        var provider = new AnonymousProvider();
+                        var url = config.getUrl();
+                        try {
+                                logEndPoints(url);
+                        } catch (InternalErrorException e) {
+                                log.error("Failed to load [{}] simulator [url: {}]. Error: {}", name, url, e.getMessage());
+                                failedEndpoints.put(config.getName(), config);
+                                return false;
+                        }
+                        try {
+                                var client = OpcUaClient.create(url,
+                                                endpoints -> ofNullable(endpoints.get(0).toBuilder().endpointUrl(url).build()),
+                                                b -> b.setApplicationName(english(APP_NAME)).setApplicationUri(APP_URL)
+                                                                .setKeyPair(keyStoreLoader.getClientKeyPair())
+                                                                .setCertificate(keyStoreLoader.getClientCertificate())
+                                                                .setCertificateChain(keyStoreLoader.getClientCertificateChain())
+                                                                .setCertificateValidator(certificateValidator)
+                                                                .setIdentityProvider(provider)
+                                                                .setRequestTimeout(uint(5000)).build());
+                                if (connect(client)) {
+                                        clients.put(name, client);
+                                        failedEndpoints.remove(name);
+                                        log.debug("Simulator client [{}] is OK", name);
+                                        return true;
+                                }
+                                log.error("Failed to connect simulator client [{}]", name);
+                                failedEndpoints.put(config.getName(), config);
+                                return false;
+                        } catch (UaException | InternalErrorException e) {
+                                log.error("Client creation error for " + name, e);
+                                return false;
+                        }
+                } finally {
+                        lock.unlock();
+                }
+        }
 
 	private void logEndPoints(String url) {
 		try {
@@ -432,9 +504,9 @@ public class OpcClient implements StatusListener {
 		}
 	}
 
-	private void browseNode(String indent, OpcUaClient client, NodeId browseRoot) {
-		try {
-			var nodes = client.getAddressSpace().browseNodes(browseRoot);
+        private void browseNode(String indent, OpcUaClient client, NodeId browseRoot) {
+                try {
+                        var nodes = client.getAddressSpace().browseNodes(browseRoot);
 
 			int i = 0;
 			for (UaNode node : nodes) {
@@ -453,9 +525,13 @@ public class OpcClient implements StatusListener {
 		}
 	}
 
-	private OpcUaClient getClient(String env) {
-		return ofNullable(clients.get(env)).orElseThrow(() -> new ResourceNotFoundException(ENV, env));
-	}
+        private OpcUaClient getClient(String env) {
+                return ofNullable(clients.get(env)).orElseThrow(() -> new ResourceNotFoundException(ENV, env));
+        }
+
+        private ReentrantLock lockFor(String env) {
+                return envLocks.computeIfAbsent(env, __ -> new ReentrantLock());
+        }
 
 	private LateValidationError addItem(Mapping m, ManagedSubscription subscription) {
 		var address = m.buildAddress();
@@ -560,38 +636,60 @@ public class OpcClient implements StatusListener {
 		log.warn("Subscription [id: {}] watchdog timer elapsed", subscription.getSubscription().getSubscriptionId());
 	}
 
-	private boolean resubscribe(ManagedSubscription failed) {
-		var found = subscriptions.cellSet().stream().filter(cell -> cell.getValue().equals(failed)).findAny();
-		if (found.isPresent()) {
-			var cell = found.get();
-			String name = cell.getColumnKey();
-			String env = cell.getRowKey();
-			try {
-				var nodeIds = failed.getDataItems().stream().map(ManagedDataItem::getNodeId).toList();
-				failed.delete();
+        private boolean resubscribe(ManagedSubscription failed) {
+                for (var entry : subscriptions.entrySet()) {
+                        var env = entry.getKey();
+                        var lock = lockFor(env);
+                        lock.lock();
+                        try {
+                                var envSubscriptions = entry.getValue();
+                                for (var subEntry : envSubscriptions.entrySet()) {
+                                        if (Objects.equals(subEntry.getValue(), failed)) {
+                                                var name = subEntry.getKey();
+                                                try {
+                                                        var nodeIds = failed.getDataItems().stream().map(ManagedDataItem::getNodeId)
+                                                                        .toList();
+                                                        envSubscriptions.remove(name, failed);
+                                                        failed.delete();
 
-				var created = ManagedSubscription.createAsync(failed.getClient(), 100).get(1L, TimeUnit.SECONDS);
-				created.createDataItems(nodeIds);
-				created.addChangeListener(new OpcSubscriptionListener(valueManager, name, env));
-				created.addStatusListener(this);
-				subscriptions.put(envOpcConfig, name, created);
-			} catch (InterruptedException | ExecutionException | TimeoutException | UaException e) {
-				log.error("Exception [{}]. {}", e.getClass().getSimpleName(), e.getMessage());
-				e.printStackTrace();
-			}
-		}
-		return false;
-	}
+                                                        var created = ManagedSubscription
+                                                                        .createAsync(failed.getClient(), subscriptionIntervalInMs)
+                                                                        .get(1L, TimeUnit.SECONDS);
+                                                        created.createDataItems(nodeIds);
+                                                        created.addChangeListener(new OpcSubscriptionListener(valueManager, name, env));
+                                                        created.addStatusListener(this);
+                                                        envSubscriptions.put(name, created);
+                                                } catch (InterruptedException | ExecutionException | TimeoutException
+                                                                | UaException e) {
+                                                        log.error("Exception [{}]. {}", e.getClass().getSimpleName(), e.getMessage());
+                                                        e.printStackTrace();
+                                                }
+                                                return true;
+                                        }
+                                }
+                        } finally {
+                                lock.unlock();
+                        }
+                }
+                return false;
+        }
 
-	private boolean connectEndpoint(OpcEndpoint endpoint) {
-		log.debug("Connect endpoint: [{}]", endpoint.getName());
-		var type = endpoint.getType();
-		if ((type.equals(IOTHUB) && connectIoTHub(endpoint))
-				|| (type.equals(SIMULATOR) && connectSimulator(endpoint))) {
-			return connect(clients.get(endpoint.getName()));
-		} else {
-			log.warn("Unsupported endpoint ({}) type: [{}]", endpoint.getName(), type);
-			return false;
-		}
-	}
+        private boolean connectEndpoint(OpcEndpoint endpoint) {
+                var name = endpoint.getName();
+                log.debug("Connect endpoint: [{}]", name);
+                var lock = lockFor(name);
+                lock.lock();
+                try {
+                        var type = endpoint.getType();
+                        if ((type.equals(IOTHUB) && connectIoTHub(endpoint))
+                                        || (type.equals(SIMULATOR) && connectSimulator(endpoint))) {
+                                return connect(clients.get(name));
+                        } else {
+                                log.warn("Unsupported endpoint ({}) type: [{}]", endpoint.getName(), type);
+                                return false;
+                        }
+                } finally {
+                        lock.unlock();
+                }
+        }
 }
