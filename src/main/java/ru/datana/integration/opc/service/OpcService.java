@@ -124,11 +124,25 @@ public class OpcService {
                 var res = new HashMap<String, TagValue>();
                 var entries = client.getValues(name, env).entrySet();
                 var descriptions = getModel(name, env).getMappings();
+                if (descriptions == null || descriptions.isEmpty()) {
+                        log.debug("No mappings configured for [{}@{}]", name, env);
+                        log.debug(OUT_1, res);
+                        return res;
+                }
+                var mappingsByAddress = descriptions.stream().map(Mapping::create)
+                                .collect(toMap(Mapping::buildAddress, identity(), (existing, duplicate) -> existing));
                 for (var entry : entries) {
-                        var address = entry.getKey();
-                        var mapping = descriptions.stream().map(Mapping::create).filter(m -> address.equals(m.buildAddress()))
-                                        .findAny().orElse(null);
-                        res.put(mapping.getKey(), entry.getValue());
+                        var mapping = mappingsByAddress.get(entry.getKey());
+                        if (mapping == null) {
+                                log.debug("Skip value for [{}@{}] unknown address [{}]", name, env, entry.getKey());
+                                continue;
+                        }
+                        var mappingKey = mapping.getKey();
+                        if (mappingKey.endsWith(ControllerUpdateService.UPDATE_SUFFIX)) {
+                                log.trace("Skip [{}@{}:{}] value in response", name, env, mappingKey);
+                                continue;
+                        }
+                        res.put(mappingKey, entry.getValue());
                 }
                 log.debug(OUT_1, res);
                 return res;
@@ -137,10 +151,12 @@ public class OpcService {
         public Map<String, TagValue> getKeysValues(String name, String env, Set<String> keys) {
                 log.debug(IN_2, name, env);
                 var subscriptionMappings = getModel(name, env).getMappings();
-                var res = client.getAllValues(name, env, mappingsByKeys(keys, subscriptionMappings));
+                var res = client.getAllValues(name, env, mappingsByKeys(keys, subscriptionMappings)).entrySet().stream()
+                                .filter(e -> !e.getKey().endsWith(ControllerUpdateService.UPDATE_SUFFIX))
+                                .collect(toMap(Entry::getKey, Entry::getValue));
                 log.debug(OUT_1, res);
                 return res;
-	}
+        }
 
 	private void setValues(Map<String, Float> valueMappings, String name, String env, boolean isOptional) {
 		var res = new HashMap<MappingDesc, Float>();

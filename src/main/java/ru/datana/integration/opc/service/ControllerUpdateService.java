@@ -14,7 +14,7 @@ import ru.datana.integration.opc.dto.TagValue;
 @RequiredArgsConstructor
 @Slf4j
 public class ControllerUpdateService {
-        private static final String UPDATE_SUFFIX = ".Update";
+        static final String UPDATE_SUFFIX = ".Update";
         private final ControllerApiClient client;
 
         public void handleValueChange(String controllerId, String env, String mappingKey, TagValue previous, TagValue current) {
