@@ -50,6 +50,7 @@ import org.eclipse.milo.opcua.sdk.client.subscriptions.ManagedSubscription;
 import org.eclipse.milo.opcua.sdk.client.subscriptions.ManagedSubscription.StatusListener;
 import org.eclipse.milo.opcua.stack.client.security.DefaultClientCertificateValidator;
 import org.eclipse.milo.opcua.stack.core.Identifiers;
+import org.eclipse.milo.opcua.stack.core.NamespaceTable;
 import org.eclipse.milo.opcua.stack.core.UaException;
 import org.eclipse.milo.opcua.stack.core.security.DefaultTrustListManager;
 import org.eclipse.milo.opcua.stack.core.types.builtin.DataValue;
@@ -117,6 +118,7 @@ public class OpcClient implements StatusListener {
 
         private DefaultClientCertificateValidator certificateValidator;
         private final ConcurrentMap<String, OpcUaClient> clients = new ConcurrentHashMap<>();
+        private final ConcurrentMap<String, ConcurrentMap<Integer, NamespaceBinding>> namespaceCache = new ConcurrentHashMap<>();
         private final ConcurrentMap<String, OpcEndpoint> failedEndpoints = new ConcurrentHashMap<>();
         private final ConcurrentMap<String, ReentrantLock> envLocks = new ConcurrentHashMap<>();
 
@@ -179,8 +181,8 @@ public class OpcClient implements StatusListener {
                                         var endpoint = ofNullable(failedEndpoints.get(env))
                                                         .orElseThrow(() -> new ResourceNotFoundException(ENV, env));
                                         if (!connectEndpoint(endpoint)) {
-                                                throw new InternalErrorException(
-                                                                "Failure to connect to [%s] environment".formatted(env));
+                                                        throw new InternalErrorException(
+                                                                        "Failure to connect to [%s] environment".formatted(env));
                                         } else {
                                                 client = clients.get(env);
                                         }
@@ -188,7 +190,9 @@ public class OpcClient implements StatusListener {
 
                                 var subscription = ManagedSubscription.createAsync(client, subscriptionIntervalInMs)
                                                 .get(OPC_TIMEOUT_MS, MILLISECONDS);
-                                var mappings = descriptions.stream().map(Mapping::create).collect(toList());
+                                var clientRef = client;
+                                var mappings = descriptions.stream().map(desc -> toMapping(env, clientRef, desc))
+                                                .collect(toList());
                                 mappings.forEach(mapping -> log.info("Subscribing [{}@{}] tag [{}] with path [{}]", name, env,
                                                 mapping.getKey(), mapping.buildAddress()));
                                 var errors = mappings.stream().map(m -> addItem(m, subscription))
@@ -262,14 +266,15 @@ public class OpcClient implements StatusListener {
                 lock.lock();
                 try {
                         var values = new HashMap<String, TagValue>();
+                        var client = getClient(env);
                         // Do not treat Bad status as missing mapping; return it with status="Bad"
-                        var mappings = descriptions.stream().map(Mapping::create).collect(toSet());
+                        var mappings = descriptions.stream().map(desc -> toMapping(env, client, desc)).collect(toSet());
                         List<ReadValueId> readValueIds = new ArrayList<>();
                         mappings.forEach(m -> readValueIds.add(ReadValueId.builder().nodeId(m.getNodeId()).attributeId(Value.uid())
                                         .indexRange(null).dataEncoding(NULL_VALUE).build()));
 
                         try {
-                                var results = getClient(env).read(0.0, TimestampsToReturn.Both, readValueIds)
+                                var results = client.read(0.0, TimestampsToReturn.Both, readValueIds)
                                                 .get(OPC_TIMEOUT_MS, MILLISECONDS).getResults();
                                 int i = 0;
                                 for (var it = mappings.iterator(); it.hasNext();) {
@@ -306,10 +311,11 @@ public class OpcClient implements StatusListener {
                 var lock = lockFor(env);
                 lock.lock();
                 try {
+                        var client = getClient(env);
                         var res = values.entrySet().stream()
                                         // TODO: remove filter when all tags will support "AllowNulls" prop
-                                        .filter(e -> e.getValue() != null).map(this::buildWriteValue).toList();
-                        var client = getClient(env);
+                                        .filter(e -> e.getValue() != null)
+                                        .map(e -> buildWriteValue(env, client, e)).toList();
                         try {
                                 var response = client.write(res).get(OPC_TIMEOUT_MS, MILLISECONDS);
                                 var statusCodes = response.getResults();
@@ -418,6 +424,7 @@ public class OpcClient implements StatusListener {
                                                                 .setRequestTimeout(uint(5000)).build());
                                 if (connect(client)) {
                                         clients.put(name, client);
+                                        namespaceCache.remove(name);
                                         failedEndpoints.remove(name);
                                         log.debug("IotHub client [{}] is OK", name);
                                         return true;
@@ -462,6 +469,7 @@ public class OpcClient implements StatusListener {
                                                                 .setRequestTimeout(uint(5000)).build());
                                 if (connect(client)) {
                                         clients.put(name, client);
+                                        namespaceCache.remove(name);
                                         failedEndpoints.remove(name);
                                         log.debug("Simulator client [{}] is OK", name);
                                         return true;
@@ -529,9 +537,14 @@ public class OpcClient implements StatusListener {
                 return ofNullable(clients.get(env)).orElseThrow(() -> new ResourceNotFoundException(ENV, env));
         }
 
-        private ReentrantLock lockFor(String env) {
-                return envLocks.computeIfAbsent(env, __ -> new ReentrantLock());
-        }
+	private ReentrantLock lockFor(String env) {
+		return envLocks.computeIfAbsent(env, __ -> new ReentrantLock());
+	}
+
+	private Mapping toMapping(String env, OpcUaClient client, MappingDesc desc) {
+		var resolvedIndex = resolveNamespaceIndex(env, desc.getNamespaceIndex(), client);
+		return Mapping.create(desc, resolvedIndex);
+	}
 
 	private LateValidationError addItem(Mapping m, ManagedSubscription subscription) {
 		var address = m.buildAddress();
@@ -551,14 +564,72 @@ public class OpcClient implements StatusListener {
 		}
 	}
 
-	private WriteValue buildWriteValue(Entry<MappingDesc, Float> e) {
-		var nodeId = Mapping.create(e.getKey()).getNodeId();
+	private WriteValue buildWriteValue(String env, OpcUaClient client, Entry<MappingDesc, Float> e) {
+		var mapping = toMapping(env, client, e.getKey());
+		var nodeId = mapping.getNodeId();
 		if (e.getKey().getKey().equalsIgnoreCase("status")) {
 			return new WriteValue(nodeId, Value.uid(), null, buildDataValue(e.getValue().intValue()));
 		} else {
 			return new WriteValue(nodeId, Value.uid(), null, buildDataValue(e.getValue()));
 		}
 	}
+
+	private int resolveNamespaceIndex(String env, int requestedIndex, OpcUaClient client) {
+		var cache = namespaceCache.computeIfAbsent(env, __ -> new ConcurrentHashMap<>());
+		var table = client.getNamespaceTable();
+		var binding = cache.compute(requestedIndex, (idx, existing) -> {
+			if (existing == null || existing.uri() == null) {
+				var uri = safeResolveUri(table, idx);
+				if (uri != null) {
+					var actual = safeResolveIndex(table, uri);
+					if (actual >= 0) {
+						return new NamespaceBinding(uri, actual);
+					}
+				}
+				return new NamespaceBinding(null, idx);
+			} else {
+				var actual = safeResolveIndex(table, existing.uri());
+				if (actual >= 0) {
+					return new NamespaceBinding(existing.uri(), actual);
+				}
+				var uri = safeResolveUri(table, idx);
+				if (uri != null) {
+					actual = safeResolveIndex(table, uri);
+					if (actual >= 0) {
+						return new NamespaceBinding(uri, actual);
+					}
+				}
+				return new NamespaceBinding(existing.uri(), idx);
+			}
+		});
+		return binding.index();
+	}
+
+	private String safeResolveUri(NamespaceTable table, int index) {
+		try {
+			return table.getUri(index);
+		} catch (Exception e) {
+			log.warn("Failed to resolve namespace URI for index [{}]: {}", index, e.getMessage());
+			return null;
+		}
+	}
+
+	private int safeResolveIndex(NamespaceTable table, String uri) {
+		if (uri == null) {
+			return -1;
+		}
+		try {
+			var resolved = table.getIndex(uri);
+			return resolved != null ? resolved.intValue() : -1;
+		} catch (Exception e) {
+			log.warn("Failed to resolve namespace index for URI [{}]: {}", uri, e.getMessage());
+			return -1;
+		}
+	}
+
+	private static record NamespaceBinding(String uri, int index) {
+	}
+
 
     private DataValue buildDataValue(Object value) {
         var variant = ofNullable(value).map(Variant::new).orElse(Variant.NULL_VALUE);
