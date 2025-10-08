@@ -61,15 +61,19 @@ public class ControllerUpdateService {
                 switch (command) {
                 case "State" -> {
                         switch (numericValue) {
-                        case 0 -> client.stop(env, controllerId);
-                        case 1 -> client.startPredict(env, controllerId);
-                        case 2 -> client.start(env, controllerId);
+                        case 1 -> client.stop(env, controllerId);
+                        case 2 -> client.startPredict(env, controllerId);
+                        case 3 -> client.start(env, controllerId);
                         default -> log.warn("Unknown controller state value [{}] for {}@{}", numericValue, controllerId, env);
                         }
                 }
                 case "OptimizationState" -> {
-                        var enabled = numericValue != 0;
-                        client.updateOptimization(env, controllerId, singletonMap("enabled", enabled));
+                        var enabled = numericValue == 2;
+                        if (numericValue == 1 || numericValue == 2) {
+                                client.updateOptimization(env, controllerId, singletonMap("enabled", enabled));
+                        } else {
+                                log.warn("Unknown optimization state value [{}] for {}@{}", numericValue, controllerId, env);
+                        }
                 }
                 default -> log.debug("Unsupported controller command [{}]", command);
                 }
@@ -79,8 +83,14 @@ public class ControllerUpdateService {
                 log.debug("Execute variable update [{}].[{}] = {} for {}@{}", variable, property, value, controllerId, env);
                 switch (property) {
                 case "state" -> {
-                        var stateValue = value.intValue() == 0 ? "OFF" : "ON";
-                        client.updateStates(env, controllerId, singletonMap(variable, stateValue));
+                        var numericValue = value.intValue();
+                        if (numericValue == 1 || numericValue == 2) {
+                                var stateValue = numericValue == 1 ? "OFF" : "ON";
+                                client.updateStates(env, controllerId, singletonMap(variable, stateValue));
+                        } else {
+                                log.warn("Unknown state value [{}] for variable [{}] of {}@{}", numericValue, variable, controllerId,
+                                                env);
+                        }
                 }
                 case "limit_bottom", "limit_top", "set_point" -> {
                         client.updateLimits(env, controllerId, singletonMap(variable, singletonMap(property, value)));
