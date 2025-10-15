@@ -37,7 +37,6 @@ import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -93,21 +92,17 @@ import ru.datana.integration.opc.request.MappingDesc;
 public class OpcClient implements StatusListener {
 	private static final String IOTHUB = "iothub";
 	private static final String SIMULATOR = "simulator";
-	private static final long OPC_TIMEOUT_MS = 1000L;
+        public static record LateValidationError(String address, String message) {
+                public LateValidationError {
+                        requireNonNull(address);
+                        requireNonNull(message);
+                }
+        }
 
-	public static record LateValidationError(String address, String message) {
-		public LateValidationError {
-			requireNonNull(address);
-			requireNonNull(message);
-		}
-	}
-
-	private static final int CONNECTION_DISCONNECT_IN_SECONDS = 30;
-
-	public static final String IOT_HUB = "IOT";
-	private static final String ENV = "ENVIRONMENT";
-	private static final String APP_NAME = "datana-opc-client";
-	private static final String APP_URL = "urn:datana:integration:opc:client";
+        public static final String IOT_HUB = "IOT";
+        private static final String ENV = "ENVIRONMENT";
+        private static final String APP_NAME = "datana-opc-client";
+        private static final String APP_URL = "urn:datana:integration:opc:client";
 
 	private final ObjectMapper mapper;
 	private final KeyStoreLoader keyStoreLoader;
@@ -123,10 +118,16 @@ public class OpcClient implements StatusListener {
         private final ConcurrentMap<String, OpcEndpoint> failedEndpoints = new ConcurrentHashMap<>();
         private final ConcurrentMap<String, ReentrantLock> envLocks = new ConcurrentHashMap<>();
 
-	@Value("${subscriptionIntervalInMs:100}")
-	private int subscriptionIntervalInMs;
-	@Value("${envOpcConfig:}")
-	private String envOpcConfig;
+        @Value("${subscriptionIntervalInMs:100}")
+        private int subscriptionIntervalInMs;
+        @Value("${envOpcConfig:}")
+        private String envOpcConfig;
+        @Value("${opc.client.future-timeout-ms:1000}")
+        private long opcTimeoutMs;
+        @Value("${opc.client.request-timeout-ms:5000}")
+        private long opcRequestTimeoutMs;
+        @Value("${opc.client.disconnect-threshold-seconds:30}")
+        private int disconnectionThresholdSeconds;
 
 	@PostConstruct
 	public void init() throws Exception {
@@ -164,7 +165,7 @@ public class OpcClient implements StatusListener {
                 connectAll();
         }
 
-        @Scheduled(cron = "0 0/1 * * * *")
+        @Scheduled(cron = "${opc.client.availability-cron:0 0/1 * * * *}")
         public void checkAvailability() {
                 log.debug("Checking ENV availabilities");
                 resolvedProviders.stream().forEach(this::checkAvailability);
@@ -192,7 +193,7 @@ public class OpcClient implements StatusListener {
                                 }
 
                                 var subscription = ManagedSubscription.createAsync(client, subscriptionIntervalInMs)
-                                                .get(OPC_TIMEOUT_MS, MILLISECONDS);
+                                                .get(opcTimeoutMs, MILLISECONDS);
                                 var clientRef = client;
                                 var mappings = descriptions.stream().map(desc -> toMapping(env, clientRef, desc))
                                                 .collect(toList());
@@ -236,7 +237,7 @@ public class OpcClient implements StatusListener {
                         var subscription = envSubscriptions.remove(name);
                         if (subscription != null) {
                                 try {
-                                        subscription.deleteAsync().get(OPC_TIMEOUT_MS, MILLISECONDS);
+                                        subscription.deleteAsync().get(opcTimeoutMs, MILLISECONDS);
                                         valueManager.remove(name, env);
                                         log.debug(OUT_1, true);
                                         return true;
@@ -279,7 +280,7 @@ public class OpcClient implements StatusListener {
 
                         try {
                                 var results = client.read(0.0, TimestampsToReturn.Both, readValueIds)
-                                                .get(OPC_TIMEOUT_MS, MILLISECONDS).getResults();
+                                                .get(opcTimeoutMs, MILLISECONDS).getResults();
                                 int i = 0;
                                 for (var it = mappings.iterator(); it.hasNext();) {
                                         var mapping = it.next();
@@ -321,7 +322,7 @@ public class OpcClient implements StatusListener {
                                         .filter(e -> e.getValue() != null)
                                         .map(e -> buildWriteValue(env, client, e)).toList();
                         try {
-                                var response = client.write(res).get(OPC_TIMEOUT_MS, MILLISECONDS);
+                                var response = client.write(res).get(opcTimeoutMs, MILLISECONDS);
                                 var statusCodes = response.getResults();
                                 for (int i = 0; i < statusCodes.length; i++) {
                                         var wv = res.get(i);
@@ -367,7 +368,7 @@ public class OpcClient implements StatusListener {
                         Instant lastUpdated = valueManager.getUpdateTS(env);
                         var envSubscriptions = subscriptions.get(env);
                         if (envSubscriptions != null && !envSubscriptions.isEmpty()) {
-                                if (between(lastUpdated, now()).getSeconds() > CONNECTION_DISCONNECT_IN_SECONDS) {
+                                if (between(lastUpdated, now()).getSeconds() > disconnectionThresholdSeconds) {
                                         log.warn("Reconnecting to [{}], last data were received at {}", cfg.getName(),
                                                         lastUpdated.toString());
                                         boolean isConnected = switch (cfg.getType()) {
@@ -425,7 +426,7 @@ public class OpcClient implements StatusListener {
                                                                 .setCertificateChain(keyStoreLoader.getClientCertificateChain())
                                                                 .setCertificateValidator(certificateValidator)
                                                                 .setIdentityProvider(provider)
-                                                                .setRequestTimeout(uint(5000)).build());
+                                                                .setRequestTimeout(uint(opcRequestTimeoutMs)).build());
                                 if (connect(client)) {
                                         clients.put(name, client);
                                         namespaceCache.remove(name);
@@ -470,7 +471,7 @@ public class OpcClient implements StatusListener {
                                                                 .setCertificateChain(keyStoreLoader.getClientCertificateChain())
                                                                 .setCertificateValidator(certificateValidator)
                                                                 .setIdentityProvider(provider)
-                                                                .setRequestTimeout(uint(5000)).build());
+                                                                .setRequestTimeout(uint(opcRequestTimeoutMs)).build());
                                 if (connect(client)) {
                                         clients.put(name, client);
                                         namespaceCache.remove(name);
@@ -492,7 +493,7 @@ public class OpcClient implements StatusListener {
 
 	private void logEndPoints(String url) {
 		try {
-			getEndpoints(url).get(OPC_TIMEOUT_MS, MILLISECONDS)
+                        getEndpoints(url).get(opcTimeoutMs, MILLISECONDS)
 					.forEach(desc -> log.debug("endpoint-url: {}", desc.getEndpointUrl()));
 		} catch (InterruptedException | ExecutionException | TimeoutException e) {
 			var message = e.getMessage();
@@ -508,7 +509,7 @@ public class OpcClient implements StatusListener {
 	private boolean connect(OpcUaClient client) {
 		try {
 			// synchronous connect
-			client.connect().get(OPC_TIMEOUT_MS, MILLISECONDS);
+                        client.connect().get(opcTimeoutMs, MILLISECONDS);
 			return true;
 		} catch (InterruptedException | ExecutionException | TimeoutException e) {
 			log.error("Error [at {}]: {}", client.getConfig().getEndpoint().getEndpointUrl(), e.getMessage());
@@ -729,7 +730,7 @@ public class OpcClient implements StatusListener {
 
                                                         var created = ManagedSubscription
                                                                         .createAsync(failed.getClient(), subscriptionIntervalInMs)
-                                                                        .get(1L, TimeUnit.SECONDS);
+                                                                        .get(opcTimeoutMs, MILLISECONDS);
                                                         created.createDataItems(nodeIds);
                                                         created.addChangeListener(new OpcSubscriptionListener(valueManager, name, env));
                                                         created.addStatusListener(this);
