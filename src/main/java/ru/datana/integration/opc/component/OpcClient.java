@@ -209,6 +209,7 @@ public class OpcClient implements StatusListener {
                                 subscription.addChangeListener(new OpcSubscriptionListener(valueManager, name, env));
                                 subscription.addStatusListener(this);
                                 envSubscriptions.put(name, subscription);
+                                valueManager.registerMappings(name, env, descriptions);
                                 getAllValues(name, env, descriptions);
                         } catch (InterruptedException | ExecutionException | TimeoutException e) {
                                 var message = "Failure to create [%s] subscription at [%s] environment".formatted(name, env);
