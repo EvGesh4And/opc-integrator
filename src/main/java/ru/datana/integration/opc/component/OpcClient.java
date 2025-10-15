@@ -115,6 +115,7 @@ public class OpcClient implements StatusListener {
 	private final OpcEndpointsConfiguraiton opcConfig;
         private final ConcurrentMap<String, ConcurrentMap<String, ManagedSubscription>> subscriptions = new ConcurrentHashMap<>();
         private final ValueManager valueManager;
+        private Set<OpcEndpoint> resolvedProviders = Set.of();
 
         private DefaultClientCertificateValidator certificateValidator;
         private final ConcurrentMap<String, OpcUaClient> clients = new ConcurrentHashMap<>();
@@ -142,7 +143,7 @@ public class OpcClient implements StatusListener {
 		keyStoreLoader.load(securityTempDir);
 		certificateValidator = new DefaultClientCertificateValidator(new DefaultTrustListManager(pkiDir));
 
-		var providers = opcConfig.getProviders();
+                var providers = opcConfig.getProviders();
 		if (!isBlank(envOpcConfig)) {
 			log.warn("Loading environment congigurations from ENV");
 			try {
@@ -156,17 +157,19 @@ public class OpcClient implements StatusListener {
 			log.warn("Loading environment congigurations from code");
 		}
 
-		providers.stream().filter(p -> p.getType().equals(IOTHUB)).forEach(this::connectIoTHub);
-		providers.stream().filter(p -> p.getType().equals(SIMULATOR)).forEach(this::connectSimulator);
-		connectAll();
-	}
+                resolvedProviders = Set.copyOf(providers);
 
-	@Scheduled(cron = "0 0/1 * * * *")
-	public void checkAvailability() {
-		log.debug("Checking ENV availabilities");
-		opcConfig.getProviders().stream().forEach(this::checkAvailability);
-		failedEndpoints.values().stream().forEach(this::connectEndpoint);
-	}
+                resolvedProviders.stream().filter(p -> p.getType().equals(IOTHUB)).forEach(this::connectIoTHub);
+                resolvedProviders.stream().filter(p -> p.getType().equals(SIMULATOR)).forEach(this::connectSimulator);
+                connectAll();
+        }
+
+        @Scheduled(cron = "0 0/1 * * * *")
+        public void checkAvailability() {
+                log.debug("Checking ENV availabilities");
+                resolvedProviders.stream().forEach(this::checkAvailability);
+                failedEndpoints.values().stream().forEach(this::connectEndpoint);
+        }
 
         public void subscribe(String name, String env, Set<MappingDesc> descriptions) {
                 log.debug(IN_3, name, env, descriptions);
